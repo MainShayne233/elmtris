@@ -30,12 +30,25 @@ type alias Grid =
     Array2D Cell
 
 
+type Move
+    = Down
+
+
+type MoveAttempt
+    = Possible Piece
+    | NotPossible
+
+
 initializeBoard =
     Array2D.initialize 20 10 (\_ _ -> Empty)
 
 
 type alias Piece =
-    ( Grid, ( Int, Int ) )
+    { grid : Grid
+    , leftOffset : Int
+    , downOffset : Int
+    , timeSinceLastMoved : Time.Posix
+    }
 
 
 type PieceType
@@ -51,7 +64,6 @@ type alias Model =
     { board : Grid
     , activePiece : Maybe Piece
     , turnDuration : Int
-    , stalledSinceTime : Time.Posix
     }
 
 
@@ -60,7 +72,6 @@ init =
     ( { board = initializeBoard
       , activePiece = Just (initializePiece TriFry)
       , turnDuration = 200
-      , stalledSinceTime = Time.millisToPosix 0
       }
     , Cmd.none
     )
@@ -87,7 +98,7 @@ initializePiece pieceType =
                         , [ Empty, Empty, Empty, Empty ]
                         ]
     in
-    ( pieceGrid, ( 4, 0 ) )
+    Piece pieceGrid 4 0 (Time.millisToPosix 0)
 
 
 
@@ -110,17 +121,75 @@ diffTime firstTime secondTime =
     Time.posixToMillis firstTime - Time.posixToMillis secondTime
 
 
-tickActivePiece : Model -> Piece -> Time.Posix -> ( Piece, Time.Posix )
-tickActivePiece { stalledSinceTime, turnDuration } ( grid, ( leftOffset, downOffset ) ) currentTime =
+applyMoveToPiece : Move -> Time.Posix -> Piece -> Piece
+applyMoveToPiece move currentTime piece =
+    case move of
+        Down ->
+            { piece | timeSinceLastMoved = currentTime, downOffset = piece.downOffset + 1 }
+
+
+pieceIsLegal : Grid -> Piece -> Bool
+pieceIsLegal board piece =
+    piece.grid
+        |> Array2D.toFlatList
+        |> List.all
+            (\pieceElement ->
+                let
+                    ( rowIndex, columnIndex, cell ) =
+                        pieceElement
+                in
+                if cell /= Empty then
+                    let
+                        calculatedColumnIndex =
+                            columnIndex + piece.downOffset
+
+                        calculatedRowIndex =
+                            rowIndex + piece.leftOffset
+
+                        _ =
+                            Debug.log "Coords" ( calculatedColumnIndex, calculatedRowIndex )
+                    in
+                    case Array2D.get calculatedColumnIndex calculatedRowIndex board of
+                        Just boardCell ->
+                            boardCell == Empty
+
+                        _ ->
+                            False
+
+                else
+                    True
+            )
+
+
+attemptToMovePiece : Grid -> Move -> Time.Posix -> Piece -> MoveAttempt
+attemptToMovePiece board move currentTime piece =
     let
-        timeSince =
-            diffTime currentTime stalledSinceTime
+        movedPiece =
+            applyMoveToPiece move currentTime piece
     in
-    if timeSince > turnDuration then
-        ( ( grid, ( leftOffset, downOffset + 1 ) ), currentTime )
+    if pieceIsLegal board movedPiece then
+        Possible movedPiece
 
     else
-        ( ( grid, ( leftOffset, downOffset ) ), stalledSinceTime )
+        NotPossible
+
+
+tickActivePiece : Model -> Piece -> Time.Posix -> Piece
+tickActivePiece { turnDuration, board } piece currentTime =
+    let
+        timeSince =
+            diffTime currentTime piece.timeSinceLastMoved
+    in
+    if timeSince > turnDuration then
+        case attemptToMovePiece board Down currentTime piece of
+            Possible movedPiece ->
+                movedPiece
+
+            NotPossible ->
+                piece
+
+    else
+        piece
 
 
 doNextTick : Model -> Time.Posix -> ( Model, Cmd Msg )
@@ -128,10 +197,10 @@ doNextTick model time =
     case model.activePiece of
         Just piece ->
             let
-                ( updatedActivePiece, updatedStalledSinceTime ) =
+                updatedActivePiece =
                     tickActivePiece model piece time
             in
-            ( { model | activePiece = Just updatedActivePiece, stalledSinceTime = updatedStalledSinceTime }, Cmd.none )
+            ( { model | activePiece = Just updatedActivePiece }, Cmd.none )
 
         Nothing ->
             ( model, Cmd.none )
@@ -152,13 +221,13 @@ update msg model =
 applyPiece : Grid -> Maybe Piece -> Grid
 applyPiece board maybePiece =
     case maybePiece of
-        Just ( pieceGrid, ( leftOffset, downOffset ) ) ->
+        Just { grid, leftOffset, downOffset } ->
             Array2D.indexedFoldl
                 (\columnIndex rowIndex cell accBoard ->
                     Array2D.set (columnIndex + downOffset) (rowIndex + leftOffset) cell accBoard
                 )
                 board
-                pieceGrid
+                grid
 
         Nothing ->
             board
